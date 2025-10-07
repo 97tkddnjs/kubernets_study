@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: secondary-ingress
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - d.example.com
+    - e.example.com
+    - f.example.com
+    secretName: tls-secret-2
+  rules:
+  - host: d.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: main-service
+            port:
+              number: 80
+# ... e.example.com, f.example.com에 대한 규칙도 비슷하게 정의 ...
