@@ -113,6 +113,8 @@ spec:
       - name: jenkins
         image: jenkins/jenkins:lts-jdk17
         imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 0  # root로 실행 (Docker 접근 위해)
         resources:
           limits:
             memory: "2Gi"
@@ -146,6 +148,14 @@ spec:
           mountPath: /var/jenkins_home
         - name: docker-sock
           mountPath: /var/run/docker.sock
+        lifecycle:
+          postStart:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  apt-get update && apt-get install -y docker.io
       volumes:
       - name: jenkins-data
         persistentVolumeClaim:

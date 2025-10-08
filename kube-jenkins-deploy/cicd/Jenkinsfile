@@ -26,7 +26,6 @@ pipeline {
                 script {
                     echo "🐳 Building Docker image: ${DOCKER_IMAGE}"
                     sh """
-                        cd cicd
                         docker build -t ${DOCKER_IMAGE} -f Dockerfile ..
                         docker tag ${DOCKER_IMAGE} ${APP_NAME}:latest
                     """
@@ -72,7 +71,7 @@ pipeline {
                             -e 's|IMAGE_TAG_PLACEHOLDER|${IMAGE_TAG}|g' \
                             -e 's|VERSION_PLACEHOLDER|${IMAGE_TAG}|g' \
                             -e 's|BUILD_PLACEHOLDER|${BUILD_NUMBER}|g' \
-                            cicd/k8s-deployment.yaml | kubectl apply -f -
+                            deployment.yaml | kubectl apply -f -
                     """
                     echo "✅ Kubernetes deployment applied"
                 }
