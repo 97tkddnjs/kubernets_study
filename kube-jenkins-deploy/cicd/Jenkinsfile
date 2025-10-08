@@ -103,7 +103,8 @@ spec:
                             for i in 1 2 3 4 5 6 7 8 9 10; do
                                 echo "Attempt \$i: Testing health endpoint..."
                                 
-                                if docker exec test-${BUILD_NUMBER} wget -q -O- http://localhost:8000/health 2>/dev/null; then
+                                # curl 사용 (wget 대신)
+                                if docker exec test-${BUILD_NUMBER} curl -f -s http://localhost:8000/health 2>/dev/null; then
                                     echo "✅ Health check passed on attempt \$i!"
                                     SUCCESS=true
                                     break
