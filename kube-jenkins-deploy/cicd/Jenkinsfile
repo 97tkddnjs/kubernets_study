@@ -52,54 +52,62 @@ spec:
     stages {
         stage('Checkout') {
             steps {
-                echo "========================================="
                 echo "🔄 Checking out code"
-                echo "========================================="
                 checkout scm
-                sh '''
-                    pwd
-                    ls -la
-                    ls -la kube-jenkins-deploy/
-                    ls -la kube-jenkins-deploy/cicd/
-                '''
             }
         }
         
         stage('Build Docker Image') {
             steps {
                 container('docker') {
-                    script {
-                        echo "🐳 Building Docker image: ${DOCKER_IMAGE}"
-                        sh """
-                            cd kube-jenkins-deploy
-                            docker build -t ${DOCKER_IMAGE} -f cicd/Dockerfile .
-                            docker tag ${DOCKER_IMAGE} ${APP_NAME}:latest
-                        """
-                        echo "✅ Docker image built successfully"
-                        sh "docker images | grep ${APP_NAME}"
-                    }
+                    echo "🐳 Building: ${DOCKER_IMAGE}"
+                    sh """
+                        cd kube-jenkins-deploy
+                        docker build -t ${DOCKER_IMAGE} -f cicd/Dockerfile .
+                        docker tag ${DOCKER_IMAGE} ${APP_NAME}:latest
+                    """
                 }
             }
         }
-        
         
         stage('Deploy to Kubernetes') {
             steps {
                 container('kubectl') {
                     script {
-                        echo "☸️  Deploying to Kubernetes..."
+                        echo "☸️ Deploying to Kubernetes..."
+                        
+                        // 디버깅 정보
                         sh """
                             cd kube-jenkins-deploy
-                            
-                            kubectl version --client
+                            pwd
+                            ls -la cicd/
+                        """
+                        
+                        // kubectl 연결 테스트
+                        sh "kubectl version --client"
+                        sh "kubectl get nodes"
+                        
+                        // 배포
+                        sh """
+                            cd kube-jenkins-deploy
                             
                             sed -e 's|IMAGE_NAME_PLACEHOLDER|${DOCKER_IMAGE}|g' \
                                 -e 's|IMAGE_TAG_PLACEHOLDER|${IMAGE_TAG}|g' \
                                 -e 's|VERSION_PLACEHOLDER|${IMAGE_TAG}|g' \
                                 -e 's|BUILD_PLACEHOLDER|${BUILD_NUMBER}|g' \
-                                cicd/deployment.yaml | kubectl apply -f -
+                                cicd/deployment.yaml > /tmp/deployment-final.yaml
+                            
+                            echo "=== Deployment YAML Preview ==="
+                            head -30 /tmp/deployment-final.yaml
+                            
+                            echo "=== Applying to Kubernetes ==="
+                            kubectl apply -f /tmp/deployment-final.yaml --timeout=30s
+                            
+                            echo "=== Verifying ==="
+                            kubectl get deployment ${APP_NAME} -n ${NAMESPACE}
                         """
-                        echo "✅ Deployment applied"
+                        
+                        echo "✅ Deployed"
                     }
                 }
             }
@@ -108,48 +116,20 @@ spec:
         stage('Wait for Rollout') {
             steps {
                 container('kubectl') {
-                    script {
-                        echo "⏳ Waiting for deployment..."
-                        sh "kubectl rollout status deployment/${APP_NAME} -n ${NAMESPACE} --timeout=120s"
-                        echo "✅ Rollout completed"
-                    }
+                    echo "⏳ Waiting..."
+                    sh "kubectl rollout status deployment/${APP_NAME} -n ${NAMESPACE} --timeout=120s"
                 }
             }
         }
         
-        stage('Verify Deployment') {
+        stage('Verify') {
             steps {
                 container('kubectl') {
-                    script {
-                        sh """
-                            echo "\n========== Deployment =========="
-                            kubectl get deployment ${APP_NAME} -n ${NAMESPACE}
-                            
-                            echo "\n========== Pods =========="
-                            kubectl get pods -n ${NAMESPACE} -l app=${APP_NAME}
-                            
-                            echo "\n========== Service =========="
-                            kubectl get svc ${APP_NAME}-service -n ${NAMESPACE}
-                        """
-                    }
-                }
-            }
-        }
-        
-        stage('Health Check') {
-            steps {
-                container('kubectl') {
-                    script {
-                        echo "🏥 Running health checks..."
-                        sh """
-                            sleep 10
-                            
-                            POD_NAME=\$(kubectl get pods -n ${NAMESPACE} -l app=${APP_NAME} -o jsonpath='{.items[0].metadata.name}')
-                            echo "Testing pod: \$POD_NAME"
-                            
-                            kubectl exec -n ${NAMESPACE} \$POD_NAME -- wget -q -O- http://localhost:8000/health || echo "Health check pending..."
-                        """
-                    }
+                    sh """
+                        kubectl get deployment ${APP_NAME} -n ${NAMESPACE}
+                        kubectl get pods -n ${NAMESPACE} -l app=${APP_NAME}
+                        kubectl get svc ${APP_NAME}-service -n ${NAMESPACE}
+                    """
                 }
             }
         }
@@ -158,40 +138,19 @@ spec:
     post {
         success {
             echo """
-╔═══════════════════════════════════════════════════════════╗
-║              ✅ DEPLOYMENT SUCCESSFUL! ✅                  ║
-╠═══════════════════════════════════════════════════════════╣
-║  Application: ${APP_NAME}
+╔═══════════════════════════════════════╗
+║      ✅ DEPLOYMENT SUCCESSFUL! ✅      ║
+╠═══════════════════════════════════════╣
+║  App: ${APP_NAME}
 ║  Version: ${IMAGE_TAG}
-║  Build: #${BUILD_NUMBER}
 ║  
-║  🌐 Access URLs:
-║     http://localhost:${SERVICE_PORT}/
-║     http://localhost:${SERVICE_PORT}/docs
-║     http://localhost:${SERVICE_PORT}/health
-║  
-║  📊 Check status:
-║     kubectl get all -n ${NAMESPACE} -l app=${APP_NAME}
-║  
-║  🎯 Dynamic Kubernetes Agent Used!
-╚═══════════════════════════════════════════════════════════╝
+║  🌐 http://localhost:${SERVICE_PORT}/
+║  📚 http://localhost:${SERVICE_PORT}/docs
+╚═══════════════════════════════════════╝
             """
         }
         failure {
-            echo "❌ DEPLOYMENT FAILED! Check logs above."
-        }
-        always {
-            script {
-                try {
-                    container('docker') {
-                        sh """
-                            docker ps -a | grep test-${BUILD_NUMBER} | awk '{print \$1}' | xargs -r docker rm -f || true
-                        """
-                    }
-                } catch (Exception e) {
-                    echo "Cleanup skipped: ${e.message}"
-                }
-            }
+            echo "❌ FAILED"
         }
     }
 }
