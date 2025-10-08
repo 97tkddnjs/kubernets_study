@@ -56,8 +56,12 @@ spec:
                 echo "🔄 Checking out code"
                 echo "========================================="
                 checkout scm
-                sh 'ls -la'
-                sh 'cd kube-jenkins-deploy'
+                sh '''
+                    pwd
+                    ls -la
+                    ls -la kube-jenkins-deploy/
+                    ls -la kube-jenkins-deploy/cicd/
+                '''
             }
         }
         
@@ -67,6 +71,7 @@ spec:
                     script {
                         echo "🐳 Building Docker image: ${DOCKER_IMAGE}"
                         sh """
+                            cd kube-jenkins-deploy
                             docker build -t ${DOCKER_IMAGE} -f cicd/Dockerfile .
                             docker tag ${DOCKER_IMAGE} ${APP_NAME}:latest
                         """
@@ -85,17 +90,13 @@ spec:
                         sh """
                             set -e
                             
-                            # 컨테이너 실행
                             docker run -d --name test-${BUILD_NUMBER} -p 8${BUILD_NUMBER}:8000 ${DOCKER_IMAGE}
                             
-                            # 시작 대기
                             echo "Waiting for container to start..."
                             sleep 5
                             
-                            # 로그 확인
                             docker logs test-${BUILD_NUMBER}
                             
-                            # Health check with better logic
                             echo "Starting health check..."
                             SUCCESS=false
                             
@@ -114,11 +115,9 @@ spec:
                                 fi
                             done
                             
-                            # 컨테이너 정리
                             docker stop test-${BUILD_NUMBER}
                             docker rm test-${BUILD_NUMBER}
                             
-                            # 결과 확인
                             if [ "\$SUCCESS" = "true" ]; then
                                 echo "✅ Docker image test passed!"
                                 exit 0
@@ -138,6 +137,8 @@ spec:
                     script {
                         echo "☸️  Deploying to Kubernetes..."
                         sh """
+                            cd kube-jenkins-deploy
+                            
                             kubectl version --client
                             
                             sed -e 's|IMAGE_NAME_PLACEHOLDER|${DOCKER_IMAGE}|g' \
