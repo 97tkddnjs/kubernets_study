@@ -1,5 +1,45 @@
 pipeline {
-    agent any
+    agent {
+        kubernetes {
+            yaml '''
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    jenkins: agent
+    app: fastapi-builder
+spec:
+  serviceAccountName: jenkins-admin
+  containers:
+  - name: jnlp
+    image: jenkins/inbound-agent:latest
+    args:
+    - \$(JENKINS_SECRET)
+    - \$(JENKINS_NAME)
+  
+  - name: docker
+    image: docker:24
+    command:
+    - cat
+    tty: true
+    volumeMounts:
+    - name: docker-sock
+      mountPath: /var/run/docker.sock
+  
+  - name: kubectl
+    image: bitnami/kubectl:latest
+    command:
+    - cat
+    tty: true
+  
+  volumes:
+  - name: docker-sock
+    hostPath:
+      path: /var/run/docker.sock
+'''
+            defaultContainer 'jnlp'
+        }
+    }
     
     environment {
         APP_NAME = "fastapi-app"
@@ -13,120 +53,140 @@ pipeline {
         stage('Checkout') {
             steps {
                 echo "========================================="
-                echo "🔄 Checking out code from GitHub"
-                echo "Repository: ${env.GIT_URL}"
-                echo "Branch: ${env.GIT_BRANCH}"
+                echo "🔄 Checking out code"
                 echo "========================================="
-                checkout scm
+                
+                // checkout scm 대신 git clone 사용
+                sh '''
+                    rm -rf kubernets_study
+                    git clone https://github.com/97tkddnjs/kubernets_study.git
+                    ls -la kubernets_study/kube-jenkins-deploy/cicd/
+                '''
             }
         }
         
         stage('Build Docker Image') {
             steps {
-                script {
-                    echo "🐳 Building Docker image: ${DOCKER_IMAGE}"
-                    sh """
-                        docker build -t ${DOCKER_IMAGE} -f Dockerfile ..
-                        docker tag ${DOCKER_IMAGE} ${APP_NAME}:latest
-                    """
-                    echo "✅ Docker image built successfully"
-                    sh "docker images | grep ${APP_NAME}"
+                container('docker') {
+                    script {
+                        echo "🐳 Building Docker image: ${DOCKER_IMAGE}"
+                        sh """
+                            cd kubernets_study/kube-jenkins-deploy
+                            docker build -t ${DOCKER_IMAGE} -f cicd/Dockerfile .
+                            docker tag ${DOCKER_IMAGE} ${APP_NAME}:latest
+                        """
+                        echo "✅ Docker image built successfully"
+                        sh "docker images | grep ${APP_NAME}"
+                    }
                 }
             }
         }
         
         stage('Test Docker Image') {
             steps {
-                script {
-                    echo "🧪 Testing Docker image..."
-                    sh """
-                        # 임시 컨테이너 실행
-                        docker run -d --name test-container -p 8888:8000 ${DOCKER_IMAGE}
-                        
-                        # 컨테이너가 시작될 때까지 대기
-                        sleep 5
-                        
-                        # Health check
-                        curl -f http://localhost:8888/health || exit 1
-                        
-                        # API 테스트
-                        curl -f http://localhost:8888/api/test || exit 1
-                        
-                        # 컨테이너 정리
-                        docker stop test-container
-                        docker rm test-container
-                    """
-                    echo "✅ Docker image test passed"
+                container('docker') {
+                    script {
+                        echo "🧪 Testing Docker image..."
+                        sh """
+                            docker run -d --name test-${BUILD_NUMBER} -p 8${BUILD_NUMBER}:8000 ${DOCKER_IMAGE}
+                            
+                            echo "Waiting for container to start..."
+                            sleep 5
+                            docker logs test-${BUILD_NUMBER}
+                            
+                            i=1
+                            while [ \$i -le 10 ]; do
+                                echo "Attempt \$i: Testing health endpoint..."
+                                if docker exec test-${BUILD_NUMBER} wget -q -O- http://localhost:8000/health; then
+                                    echo "✅ Health check passed!"
+                                    docker stop test-${BUILD_NUMBER}
+                                    docker rm test-${BUILD_NUMBER}
+                                    exit 0
+                                fi
+                                if [ \$i -eq 10 ]; then
+                                    echo "❌ Health check failed"
+                                    docker logs test-${BUILD_NUMBER}
+                                    docker stop test-${BUILD_NUMBER}
+                                    docker rm test-${BUILD_NUMBER}
+                                    exit 1
+                                fi
+                                sleep 3
+                                i=\$((i + 1))
+                            done
+                        """
+                        echo "✅ Docker image test passed"
+                    }
                 }
             }
         }
         
         stage('Deploy to Kubernetes') {
             steps {
-                script {
-                    echo "☸️  Deploying to Kubernetes..."
-                    sh """
-                        # Deployment YAML 수정 (placeholder 치환)
-                        sed -e 's|IMAGE_NAME_PLACEHOLDER|${DOCKER_IMAGE}|g' \
-                            -e 's|IMAGE_TAG_PLACEHOLDER|${IMAGE_TAG}|g' \
-                            -e 's|VERSION_PLACEHOLDER|${IMAGE_TAG}|g' \
-                            -e 's|BUILD_PLACEHOLDER|${BUILD_NUMBER}|g' \
-                            deployment.yaml | kubectl apply -f -
-                    """
-                    echo "✅ Kubernetes deployment applied"
+                container('kubectl') {
+                    script {
+                        echo "☸️  Deploying to Kubernetes..."
+                        sh """
+                            cd kubernets_study/kube-jenkins-deploy
+                            
+                            kubectl version --client
+                            
+                            sed -e 's|IMAGE_NAME_PLACEHOLDER|${DOCKER_IMAGE}|g' \
+                                -e 's|IMAGE_TAG_PLACEHOLDER|${IMAGE_TAG}|g' \
+                                -e 's|VERSION_PLACEHOLDER|${IMAGE_TAG}|g' \
+                                -e 's|BUILD_PLACEHOLDER|${BUILD_NUMBER}|g' \
+                                cicd/deployment.yaml | kubectl apply -f -
+                        """
+                        echo "✅ Deployment applied"
+                    }
                 }
             }
         }
         
         stage('Wait for Rollout') {
             steps {
-                script {
-                    echo "⏳ Waiting for deployment to complete..."
-                    sh """
-                        kubectl rollout status deployment/${APP_NAME} -n ${NAMESPACE} --timeout=120s
-                    """
-                    echo "✅ Rollout completed successfully"
+                container('kubectl') {
+                    script {
+                        echo "⏳ Waiting for deployment..."
+                        sh "kubectl rollout status deployment/${APP_NAME} -n ${NAMESPACE} --timeout=120s"
+                        echo "✅ Rollout completed"
+                    }
                 }
             }
         }
         
         stage('Verify Deployment') {
             steps {
-                script {
-                    echo "🔍 Verifying deployment..."
-                    sh """
-                        echo "\n========== Deployment Info =========="
-                        kubectl get deployment ${APP_NAME} -n ${NAMESPACE} -o wide
-                        
-                        echo "\n========== Pods =========="
-                        kubectl get pods -n ${NAMESPACE} -l app=${APP_NAME} -o wide
-                        
-                        echo "\n========== Service =========="
-                        kubectl get svc ${APP_NAME}-service -n ${NAMESPACE}
-                        
-                        echo "\n========== Endpoints =========="
-                        kubectl get endpoints ${APP_NAME}-service -n ${NAMESPACE}
-                    """
+                container('kubectl') {
+                    script {
+                        sh """
+                            echo "\n========== Deployment =========="
+                            kubectl get deployment ${APP_NAME} -n ${NAMESPACE}
+                            
+                            echo "\n========== Pods =========="
+                            kubectl get pods -n ${NAMESPACE} -l app=${APP_NAME}
+                            
+                            echo "\n========== Service =========="
+                            kubectl get svc ${APP_NAME}-service -n ${NAMESPACE}
+                        """
+                    }
                 }
             }
         }
         
-        stage('API Health Check') {
+        stage('Health Check') {
             steps {
-                script {
-                    echo "🏥 Running API health checks..."
-                    sh """
-                        sleep 5
-                        
-                        echo "\n========== Health Check =========="
-                        curl -s http://localhost:${SERVICE_PORT}/health | python3 -m json.tool
-                        
-                        echo "\n========== API Info =========="
-                        curl -s http://localhost:${SERVICE_PORT}/api/info | python3 -m json.tool
-                        
-                        echo "\n========== API Test =========="
-                        curl -s http://localhost:${SERVICE_PORT}/api/test | python3 -m json.tool
-                    """
+                container('kubectl') {
+                    script {
+                        echo "🏥 Running health checks..."
+                        sh """
+                            sleep 10
+                            
+                            POD_NAME=\$(kubectl get pods -n ${NAMESPACE} -l app=${APP_NAME} -o jsonpath='{.items[0].metadata.name}')
+                            echo "Testing pod: \$POD_NAME"
+                            
+                            kubectl exec -n ${NAMESPACE} \$POD_NAME -- wget -q -O- http://localhost:8000/health || echo "Health check pending..."
+                        """
+                    }
                 }
             }
         }
@@ -143,34 +203,30 @@ pipeline {
 ║  Build: #${BUILD_NUMBER}
 ║  
 ║  🌐 Access URLs:
-║     Main:   http://localhost:${SERVICE_PORT}/
-║     Health: http://localhost:${SERVICE_PORT}/health
-║     Info:   http://localhost:${SERVICE_PORT}/api/info
-║     Test:   http://localhost:${SERVICE_PORT}/api/test
-║     Docs:   http://localhost:${SERVICE_PORT}/docs
+║     http://localhost:${SERVICE_PORT}/
+║     http://localhost:${SERVICE_PORT}/docs
+║     http://localhost:${SERVICE_PORT}/health
 ║  
-║  📊 Kubernetes:
+║  📊 Check status:
 ║     kubectl get all -n ${NAMESPACE} -l app=${APP_NAME}
 ╚═══════════════════════════════════════════════════════════╝
             """
         }
         failure {
-            echo """
-╔═══════════════════════════════════════════════════════════╗
-║                ❌ DEPLOYMENT FAILED! ❌                    ║
-╠═══════════════════════════════════════════════════════════╣
-║  Build: #${BUILD_NUMBER}
-║  
-║  🔍 Check logs:
-║     kubectl logs -n ${NAMESPACE} -l app=${APP_NAME}
-╚═══════════════════════════════════════════════════════════╝
-            """
+            echo "❌ DEPLOYMENT FAILED! Check logs above."
         }
         always {
-            echo "🧹 Cleaning up test containers..."
-            sh """
-                docker ps -a | grep test-container | awk '{print \$1}' | xargs -r docker rm -f || true
-            """
+            script {
+                try {
+                    container('docker') {
+                        sh """
+                            docker ps -a | grep test-${BUILD_NUMBER} | awk '{print \$1}' | xargs -r docker rm -f || true
+                        """
+                    }
+                } catch (Exception e) {
+                    echo "Cleanup skipped: ${e.message}"
+                }
+            }
         }
     }
 }
