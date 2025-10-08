@@ -1,0 +1,177 @@
+pipeline {
+    agent any
+    
+    environment {
+        APP_NAME = "fastapi-app"
+        IMAGE_TAG = "v${BUILD_NUMBER}"
+        NAMESPACE = "devops-tools"
+        SERVICE_PORT = "32100"
+        DOCKER_IMAGE = "${APP_NAME}:${IMAGE_TAG}"
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                echo "========================================="
+                echo "🔄 Checking out code from GitHub"
+                echo "Repository: ${env.GIT_URL}"
+                echo "Branch: ${env.GIT_BRANCH}"
+                echo "========================================="
+                checkout scm
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    echo "🐳 Building Docker image: ${DOCKER_IMAGE}"
+                    sh """
+                        cd cicd
+                        docker build -t ${DOCKER_IMAGE} -f Dockerfile ..
+                        docker tag ${DOCKER_IMAGE} ${APP_NAME}:latest
+                    """
+                    echo "✅ Docker image built successfully"
+                    sh "docker images | grep ${APP_NAME}"
+                }
+            }
+        }
+        
+        stage('Test Docker Image') {
+            steps {
+                script {
+                    echo "🧪 Testing Docker image..."
+                    sh """
+                        # 임시 컨테이너 실행
+                        docker run -d --name test-container -p 8888:8000 ${DOCKER_IMAGE}
+                        
+                        # 컨테이너가 시작될 때까지 대기
+                        sleep 5
+                        
+                        # Health check
+                        curl -f http://localhost:8888/health || exit 1
+                        
+                        # API 테스트
+                        curl -f http://localhost:8888/api/test || exit 1
+                        
+                        # 컨테이너 정리
+                        docker stop test-container
+                        docker rm test-container
+                    """
+                    echo "✅ Docker image test passed"
+                }
+            }
+        }
+        
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    echo "☸️  Deploying to Kubernetes..."
+                    sh """
+                        # Deployment YAML 수정 (placeholder 치환)
+                        sed -e 's|IMAGE_NAME_PLACEHOLDER|${DOCKER_IMAGE}|g' \
+                            -e 's|IMAGE_TAG_PLACEHOLDER|${IMAGE_TAG}|g' \
+                            -e 's|VERSION_PLACEHOLDER|${IMAGE_TAG}|g' \
+                            -e 's|BUILD_PLACEHOLDER|${BUILD_NUMBER}|g' \
+                            cicd/k8s-deployment.yaml | kubectl apply -f -
+                    """
+                    echo "✅ Kubernetes deployment applied"
+                }
+            }
+        }
+        
+        stage('Wait for Rollout') {
+            steps {
+                script {
+                    echo "⏳ Waiting for deployment to complete..."
+                    sh """
+                        kubectl rollout status deployment/${APP_NAME} -n ${NAMESPACE} --timeout=120s
+                    """
+                    echo "✅ Rollout completed successfully"
+                }
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    echo "🔍 Verifying deployment..."
+                    sh """
+                        echo "\n========== Deployment Info =========="
+                        kubectl get deployment ${APP_NAME} -n ${NAMESPACE} -o wide
+                        
+                        echo "\n========== Pods =========="
+                        kubectl get pods -n ${NAMESPACE} -l app=${APP_NAME} -o wide
+                        
+                        echo "\n========== Service =========="
+                        kubectl get svc ${APP_NAME}-service -n ${NAMESPACE}
+                        
+                        echo "\n========== Endpoints =========="
+                        kubectl get endpoints ${APP_NAME}-service -n ${NAMESPACE}
+                    """
+                }
+            }
+        }
+        
+        stage('API Health Check') {
+            steps {
+                script {
+                    echo "🏥 Running API health checks..."
+                    sh """
+                        sleep 5
+                        
+                        echo "\n========== Health Check =========="
+                        curl -s http://localhost:${SERVICE_PORT}/health | python3 -m json.tool
+                        
+                        echo "\n========== API Info =========="
+                        curl -s http://localhost:${SERVICE_PORT}/api/info | python3 -m json.tool
+                        
+                        echo "\n========== API Test =========="
+                        curl -s http://localhost:${SERVICE_PORT}/api/test | python3 -m json.tool
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo """
+╔═══════════════════════════════════════════════════════════╗
+║              ✅ DEPLOYMENT SUCCESSFUL! ✅                  ║
+╠═══════════════════════════════════════════════════════════╣
+║  Application: ${APP_NAME}
+║  Version: ${IMAGE_TAG}
+║  Build: #${BUILD_NUMBER}
+║  
+║  🌐 Access URLs:
+║     Main:   http://localhost:${SERVICE_PORT}/
+║     Health: http://localhost:${SERVICE_PORT}/health
+║     Info:   http://localhost:${SERVICE_PORT}/api/info
+║     Test:   http://localhost:${SERVICE_PORT}/api/test
+║     Docs:   http://localhost:${SERVICE_PORT}/docs
+║  
+║  📊 Kubernetes:
+║     kubectl get all -n ${NAMESPACE} -l app=${APP_NAME}
+╚═══════════════════════════════════════════════════════════╝
+            """
+        }
+        failure {
+            echo """
+╔═══════════════════════════════════════════════════════════╗
+║                ❌ DEPLOYMENT FAILED! ❌                    ║
+╠═══════════════════════════════════════════════════════════╣
+║  Build: #${BUILD_NUMBER}
+║  
+║  🔍 Check logs:
+║     kubectl logs -n ${NAMESPACE} -l app=${APP_NAME}
+╚═══════════════════════════════════════════════════════════╝
+            """
+        }
+        always {
+            echo "🧹 Cleaning up test containers..."
+            sh """
+                docker ps -a | grep test-container | awk '{print \$1}' | xargs -r docker rm -f || true
+            """
+        }
+    }
+}
