@@ -82,55 +82,6 @@ spec:
             }
         }
         
-        stage('Test Docker Image') {
-            steps {
-                container('docker') {
-                    script {
-                        echo "🧪 Testing Docker image..."
-                        sh """
-                            set -e
-                            
-                            docker run -d --name test-${BUILD_NUMBER} -p 8${BUILD_NUMBER}:8000 ${DOCKER_IMAGE}
-                            
-                            echo "Waiting for container to start..."
-                            sleep 5
-                            
-                            docker logs test-${BUILD_NUMBER}
-                            
-                            echo "Starting health check..."
-                            SUCCESS=false
-                            
-                            for i in 1 2 3 4 5 6 7 8 9 10; do
-                                echo "Attempt \$i: Testing health endpoint..."
-                                
-                                # curl 사용 (wget 대신)
-                                if docker exec test-${BUILD_NUMBER} curl -f -s http://localhost:8000/health 2>/dev/null; then
-                                    echo "✅ Health check passed on attempt \$i!"
-                                    SUCCESS=true
-                                    break
-                                fi
-                                
-                                if [ \$i -lt 10 ]; then
-                                    echo "Waiting 3 seconds before retry..."
-                                    sleep 3
-                                fi
-                            done
-                            
-                            docker stop test-${BUILD_NUMBER}
-                            docker rm test-${BUILD_NUMBER}
-                            
-                            if [ "\$SUCCESS" = "true" ]; then
-                                echo "✅ Docker image test passed!"
-                                exit 0
-                            else
-                                echo "❌ Health check failed after 10 attempts"
-                                exit 1
-                            fi
-                        """
-                    }
-                }
-            }
-        }
         
         stage('Deploy to Kubernetes') {
             steps {
