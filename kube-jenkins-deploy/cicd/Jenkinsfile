@@ -27,7 +27,7 @@ spec:
       mountPath: /var/run/docker.sock
   
   - name: kubectl
-    image: bitnami/kubectl:latest
+    image: alpine/k8s:1.28.3
     command:
     - cat
     tty: true
@@ -52,12 +52,12 @@ spec:
     stages {
         stage('Checkout') {
             steps {
-                echo "🔄 Checking out code"
+                echo "🔄 Checkout"
                 checkout scm
             }
         }
         
-        stage('Build Docker Image') {
+        stage('Build') {
             steps {
                 container('docker') {
                     echo "🐳 Building: ${DOCKER_IMAGE}"
@@ -70,53 +70,33 @@ spec:
             }
         }
         
-        stage('Deploy to Kubernetes') {
+        stage('Deploy') {
             steps {
                 container('kubectl') {
-                    script {
-                        echo "☸️ Deploying to Kubernetes..."
+                    sh """
+                        set -ex
                         
-                        // 디버깅 정보
-                        sh """
-                            cd kube-jenkins-deploy
-                            pwd
-                            ls -la cicd/
-                        """
+                        cd kube-jenkins-deploy
                         
-                        // kubectl 연결 테스트
-                        sh "kubectl version --client"
-                        sh "kubectl get nodes"
+                        echo "Creating deployment YAML..."
+                        sed -e 's|IMAGE_NAME_PLACEHOLDER|${DOCKER_IMAGE}|g' \
+                            -e 's|IMAGE_TAG_PLACEHOLDER|${IMAGE_TAG}|g' \
+                            -e 's|VERSION_PLACEHOLDER|${IMAGE_TAG}|g' \
+                            -e 's|BUILD_PLACEHOLDER|${BUILD_NUMBER}|g' \
+                            cicd/deployment.yaml | tee /tmp/deployment.yaml
                         
-                        // 배포
-                        sh """
-                            cd kube-jenkins-deploy
-                            
-                            sed -e 's|IMAGE_NAME_PLACEHOLDER|${DOCKER_IMAGE}|g' \
-                                -e 's|IMAGE_TAG_PLACEHOLDER|${IMAGE_TAG}|g' \
-                                -e 's|VERSION_PLACEHOLDER|${IMAGE_TAG}|g' \
-                                -e 's|BUILD_PLACEHOLDER|${BUILD_NUMBER}|g' \
-                                cicd/deployment.yaml > /tmp/deployment-final.yaml
-                            
-                            echo "=== Deployment YAML Preview ==="
-                            head -30 /tmp/deployment-final.yaml
-                            
-                            echo "=== Applying to Kubernetes ==="
-                            kubectl apply -f /tmp/deployment-final.yaml --timeout=30s
-                            
-                            echo "=== Verifying ==="
-                            kubectl get deployment ${APP_NAME} -n ${NAMESPACE}
-                        """
+                        echo "Applying..."
+                        kubectl apply -f /tmp/deployment.yaml
                         
-                        echo "✅ Deployed"
-                    }
+                        echo "Done!"
+                    """
                 }
             }
         }
         
-        stage('Wait for Rollout') {
+        stage('Wait') {
             steps {
                 container('kubectl') {
-                    echo "⏳ Waiting..."
                     sh "kubectl rollout status deployment/${APP_NAME} -n ${NAMESPACE} --timeout=120s"
                 }
             }
@@ -138,15 +118,12 @@ spec:
     post {
         success {
             echo """
-╔═══════════════════════════════════════╗
-║      ✅ DEPLOYMENT SUCCESSFUL! ✅      ║
-╠═══════════════════════════════════════╣
-║  App: ${APP_NAME}
-║  Version: ${IMAGE_TAG}
-║  
-║  🌐 http://localhost:${SERVICE_PORT}/
-║  📚 http://localhost:${SERVICE_PORT}/docs
-╚═══════════════════════════════════════╝
+╔════════════════════════════════════╗
+║     ✅ SUCCESS! ✅                  ║
+╠════════════════════════════════════╣
+║  ${APP_NAME}:${IMAGE_TAG}
+║  🌐 http://localhost:${SERVICE_PORT}
+╚════════════════════════════════════╝
             """
         }
         failure {
