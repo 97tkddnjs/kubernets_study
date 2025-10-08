@@ -55,13 +55,9 @@ spec:
                 echo "========================================="
                 echo "🔄 Checking out code"
                 echo "========================================="
-                
-                // checkout scm 대신 git clone 사용
-                sh '''
-                    rm -rf kubernets_study
-                    git clone https://github.com/97tkddnjs/kubernets_study.git
-                    ls -la kubernets_study/kube-jenkins-deploy/cicd/
-                '''
+                checkout scm
+                sh 'ls -la'
+                sh 'cd kube-jenkins-deploy'
             }
         }
         
@@ -71,7 +67,6 @@ spec:
                     script {
                         echo "🐳 Building Docker image: ${DOCKER_IMAGE}"
                         sh """
-                            cd kubernets_study/kube-jenkins-deploy
                             docker build -t ${DOCKER_IMAGE} -f cicd/Dockerfile .
                             docker tag ${DOCKER_IMAGE} ${APP_NAME}:latest
                         """
@@ -88,33 +83,50 @@ spec:
                     script {
                         echo "🧪 Testing Docker image..."
                         sh """
+                            set -e
+                            
+                            # 컨테이너 실행
                             docker run -d --name test-${BUILD_NUMBER} -p 8${BUILD_NUMBER}:8000 ${DOCKER_IMAGE}
                             
+                            # 시작 대기
                             echo "Waiting for container to start..."
                             sleep 5
+                            
+                            # 로그 확인
                             docker logs test-${BUILD_NUMBER}
                             
-                            i=1
-                            while [ \$i -le 10 ]; do
+                            # Health check with better logic
+                            echo "Starting health check..."
+                            SUCCESS=false
+                            
+                            for i in 1 2 3 4 5 6 7 8 9 10; do
                                 echo "Attempt \$i: Testing health endpoint..."
-                                if docker exec test-${BUILD_NUMBER} wget -q -O- http://localhost:8000/health; then
-                                    echo "✅ Health check passed!"
-                                    docker stop test-${BUILD_NUMBER}
-                                    docker rm test-${BUILD_NUMBER}
-                                    exit 0
+                                
+                                if docker exec test-${BUILD_NUMBER} wget -q -O- http://localhost:8000/health 2>/dev/null; then
+                                    echo "✅ Health check passed on attempt \$i!"
+                                    SUCCESS=true
+                                    break
                                 fi
-                                if [ \$i -eq 10 ]; then
-                                    echo "❌ Health check failed"
-                                    docker logs test-${BUILD_NUMBER}
-                                    docker stop test-${BUILD_NUMBER}
-                                    docker rm test-${BUILD_NUMBER}
-                                    exit 1
+                                
+                                if [ \$i -lt 10 ]; then
+                                    echo "Waiting 3 seconds before retry..."
+                                    sleep 3
                                 fi
-                                sleep 3
-                                i=\$((i + 1))
                             done
+                            
+                            # 컨테이너 정리
+                            docker stop test-${BUILD_NUMBER}
+                            docker rm test-${BUILD_NUMBER}
+                            
+                            # 결과 확인
+                            if [ "\$SUCCESS" = "true" ]; then
+                                echo "✅ Docker image test passed!"
+                                exit 0
+                            else
+                                echo "❌ Health check failed after 10 attempts"
+                                exit 1
+                            fi
                         """
-                        echo "✅ Docker image test passed"
                     }
                 }
             }
@@ -126,8 +138,6 @@ spec:
                     script {
                         echo "☸️  Deploying to Kubernetes..."
                         sh """
-                            cd kubernets_study/kube-jenkins-deploy
-                            
                             kubectl version --client
                             
                             sed -e 's|IMAGE_NAME_PLACEHOLDER|${DOCKER_IMAGE}|g' \
@@ -209,6 +219,8 @@ spec:
 ║  
 ║  📊 Check status:
 ║     kubectl get all -n ${NAMESPACE} -l app=${APP_NAME}
+║  
+║  🎯 Dynamic Kubernetes Agent Used!
 ╚═══════════════════════════════════════════════════════════╝
             """
         }
